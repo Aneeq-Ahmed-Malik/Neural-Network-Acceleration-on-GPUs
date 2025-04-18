@@ -117,32 +117,31 @@ __global__ void compute_hidden_layer(NeuralNetwork* net, const double* input, do
     }
 }
 
-void forward_cuda(NeuralNetwork* net, double* d_input, double* d_output, double* d_hidden) {
-    double* h_hidden = (double*)malloc(HIDDEN_SIZE * sizeof(double));
-    double* h_output = (double*)malloc(OUTPUT_SIZE * sizeof(double));
-
-    compute_hidden_layer<<<1, HIDDEN_SIZE>>>(net, d_input, d_hidden);
-    cudaMemcpy(h_hidden, d_hidden, HIDDEN_SIZE * sizeof(double), D2H);
-
-    NeuralNetworkCPU net_cpu;
-    net_cpu.W2 = allocateMatrix(OUTPUT_SIZE, HIDDEN_SIZE);
-    net_cpu.b2 = (double*)calloc(OUTPUT_SIZE, sizeof(double));
-    cudaMemcpy(net_cpu.W2[0], net->W2, OUTPUT_SIZE * HIDDEN_SIZE * sizeof(double), D2H);
-    cudaMemcpy(net_cpu.b2, net->b2, OUTPUT_SIZE * sizeof(double), D2H);
-
-    for (int i = 0; i < OUTPUT_SIZE; i++) {
-        h_output[i] = net_cpu.b2[i];
+__global__ void compute_output_layer(NeuralNetwork* net, const double* hidden, double* output) {
+    int i = threadIdx.x;
+    if (i < OUTPUT_SIZE) {
+        double sum = net->b2[i];
         for (int j = 0; j < HIDDEN_SIZE; j++) {
-            h_output[i] += net_cpu.W2[i][j] * h_hidden[j];
+            sum += net->W2[i * HIDDEN_SIZE + j] * hidden[j];
         }
+        output[i] = exp(sum);
     }
-    softmax(h_output, OUTPUT_SIZE);
+}
 
-    cudaMemcpy(d_output, h_output, OUTPUT_SIZE * sizeof(double), H2D);
-    free(h_hidden);
-    free(h_output);
-    freeMatrix(net_cpu.W2, OUTPUT_SIZE);
-    free(net_cpu.b2);
+__global__ void normalize_softmax(double* output) {
+    double sum = 0.0;
+    for (int i = 0; i < OUTPUT_SIZE; i++) {
+        sum += output[i];
+    }
+    for (int i = 0; i < OUTPUT_SIZE; i++) {
+        output[i] /= sum;
+    }
+}
+
+void forward_cuda(NeuralNetwork* net, double* d_input, double* d_output, double* d_hidden) {
+    compute_hidden_layer<<<1, HIDDEN_SIZE>>>(net, d_input, d_hidden);
+    compute_output_layer<<<1, OUTPUT_SIZE>>>(net, d_hidden, d_output);
+    normalize_softmax<<<1, 1>>>(d_output);
 }
 
 void backward_cuda(NeuralNetwork* net, double* d_input, double* d_hidden, double* d_output, double* d_label) {
@@ -327,7 +326,7 @@ double** loadMNISTLabels(const char* filename, int numLabels) {
 
 NeuralNetworkCPU* createNetworkCPU() {
     NeuralNetworkCPU* net = (NeuralNetworkCPU*)malloc(sizeof(NeuralNetworkCPU));
-    net->W1 = allocateMatrix(HIDDEN_SIZE, INPUT_SIZE);
+    net Greene->W1 = allocateMatrix(HIDDEN_SIZE, INPUT_SIZE);
     net->W2 = allocateMatrix(OUTPUT_SIZE, HIDDEN_SIZE);
     net->b1 = (double*)calloc(HIDDEN_SIZE, sizeof(double));
     net->b2 = (double*)calloc(OUTPUT_SIZE, sizeof(double));
@@ -433,7 +432,7 @@ void evaluateCPU(NeuralNetworkCPU* net, double** images, double** labels, int nu
 }
 
 int main() {
-    printf("MNIST Neural Network (Kernel 1)\n\n");
+    printf("MNIST Neural Network (Kernels 1 & 2)\n\n");
 
     double** train_images = loadMNISTImages("../data/train-images.idx3-ubyte", 60000);
     double** train_labels = loadMNISTLabels("../data/train-labels.idx1-ubyte", 60000);
