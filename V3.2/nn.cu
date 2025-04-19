@@ -56,7 +56,7 @@ NeuralNetwork* createNetwork() {
     double* h_b2 = (double*)calloc(OUTPUT_SIZE, sizeof(double));
 
     srand(time(NULL));
-    for *: for (int i = 0; i < HIDDEN_SIZE * INPUT_SIZE; i++) {
+    for (int i = 0; i < HIDDEN_SIZE * INPUT_SIZE; i++) {
         h_W1[i] = ((double)rand() / RAND_MAX) * 0.01;
     }
     for (int i = 0; i < OUTPUT_SIZE * HIDDEN_SIZE; i++) {
@@ -107,15 +107,76 @@ __global__ void compute_hidden_layer(NeuralNetwork* net, const double* input, do
         for (int j = 0; j < INPUT_SIZE; j++) {
             sum += net->W1[i * INPUT_SIZE + j] * s_input[j];
         }
-        hidden[batch_idx * HIDDEN_SIZE + i] = (sum >= 0.0) ? sum : 0.0; // Error: >= instead of >
+        hidden[batch_idx * HIDDEN_SIZE + i] = (sum > 0.0) ? sum : 0.0;
+    }
+}
+
+__global__ void compute_output_layer(NeuralNetwork* net, const double* hidden, double* output) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int batch_idx = blockIdx.y;
+
+    __shared__ double s_hidden[HIDDEN_SIZE];
+    if (threadIdx.x < HIDDEN_SIZE) {
+        s_hidden[threadIdx.x] = hidden[batch_idx * HIDDEN_SIZE + threadIdx.x];
+    }
+    __syncthreads();
+
+    if (i < OUTPUT_SIZE && batch_idx < BATCH_SIZE) {
+        double sum = net->b2[i];
+        for (int j = 0; j < HIDDEN_SIZE; j++) {
+            sum += net->W2[i * HIDDEN_SIZE + j] * s_hidden[j];
+        }
+        output[batch_idx * OUTPUT_SIZE + i] = exp(sum);
+    }
+}
+
+__global__ void normalize_softmax(double* output) {
+    __shared__ double s_output[OUTPUT_SIZE];
+    __shared__ double sum;
+    int tid = threadIdx.x;
+    int batch_idx = blockIdx.y;
+
+    if (tid < OUTPUT_SIZE)
+        s_output[tid] = output[batch_idx * OUTPUT_SIZE + tid];
+    __syncthreads(); // Fixed
+    if (batch_idx < BATCH_SIZE && tid == 0) {
+        sum = 0.0;
+        for (int k = 0; k < OUTPUT_SIZE; k++)
+            sum += s_output[k];
+    }
+    __syncthreads();
+    if (tid < OUTPUT_SIZE)
+        output[batch_idx * OUTPUT_SIZE + tid] /= sum;
+}
+
+__global__ void compute_d_output(const double* output, const double* target, double* d_output) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int b = blockIdx.y;
+
+    if (i < OUTPUT_SIZE && b < BATCH_SIZE) {
+        int idx = b * OUTPUT_SIZE + i;
+        d_output[idx] = output[idx] - target[idx];
+    }
+}
+
+__global__ void compute_d_hidden(NeuralNetwork* net, const double* d_output, const double* hidden, double* d_hidden) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    int b = blockIdx.y;
+
+    __shared__ double s_output[OUTPUT_SIZE];
+    if (threadIdx.x < OUTPUT_SIZE)
+        s_output[threadIdx.x] = d_output[b * OUTPUT_SIZE + threadIdx.x];
+    __syncthreads();
+
+    if (i < HIDDEN_SIZE && b < BATCH_SIZE) {
+        double grad = 0.0;
+        for (int j = 0; j < OUTPUT_SIZE; j++)
+            grad += net->W2[j * HIDDEN_SIZE + i] * s_output[j];
+        d_hidden[b * HIDDEN_SIZE + i] = (hidden[b * HIDDEN_SIZE + i] > 0.1) ? grad : 0.0; // Error: > 0.1
     }
 }
 
 /*
-__global__ void compute_output_layer(NeuralNetwork* net, const double* hidden, double* output) { ... }
-__global__ void normalize_softmax(double* output) { ... }
-__global__ void compute_d_output(const double* output, const double* target, double* d_output) { ... }
-__global__ void compute_d_hidden(NeuralNetwork* net, const double* d_output, const double* hidden, double* d_hidden) { ... }
 __global__ void update_output_weights(NeuralNetwork* net, const double* d_output, const double* hidden) { ... }
 __global__ void update_hidden_weights(NeuralNetwork* net, const double* d_hidden, const double* input) { ... }
 */
@@ -124,6 +185,26 @@ void forward_cuda(NeuralNetwork* net, double* d_input, double* d_output, double*
     dim3 blockHidden(INPUT_SIZE);
     dim3 gridHidden(1, BATCH_SIZE);
     compute_hidden_layer<<<gridHidden, blockHidden, 0, stream>>>(net, d_input, d_hidden);
+    dim3 blockOutput(HIDDEN_SIZE);
+    dim3 gridOutput(1, BATCH_SIZE);
+    compute_output_layer<<<gridOutput, blockOutput, 0, stream>>>(net, d_hidden, d_output);
+    dim3 blockSoftmax(OUTPUT_SIZE);
+    dim3 gridSoftmax(1, BATCH_SIZE);
+    normalize_softmax<<<gridSoftmax, blockSoftmax, 0, stream>>>(d_output);
+}
+
+void backward_cuda(NeuralNetwork* net, double* input, double* hidden, double* output, double* target, cudaStream_t stream) {
+    double *d_output_grad, *d_hidden_grad;
+    cudaMalloc(&d_output_grad, BATCH_SIZE * OUTPUT_SIZE * sizeof(double));
+    cudaMalloc(&d_hidden_grad, BATCH_SIZE * HIDDEN_SIZE * sizeof(double));
+    dim3 blockDOutput(10);
+    dim3 gridDOutput(1, BATCH_SIZE);
+    compute_d_output<<<gridDOutput, blockDOutput, 0, stream>>>(output, target, d_output_grad);
+    dim3 blockDHidden(128);
+    dim3 gridDHidden(1, BATCH_SIZE);
+    compute_d_hidden<<<gridDHidden, blockDHidden, 0, stream>>>(net, d_output_grad, hidden, d_hidden_grad);
+    cudaFree(d_output_grad);
+    cudaFree(d_hidden_grad);
 }
 
 void train(NeuralNetwork* net, double** images, double** labels, int numImages) {
@@ -144,6 +225,7 @@ void train(NeuralNetwork* net, double** images, double** labels, int numImages) 
                 cudaMemcpyAsync(d_label + b * NUM_CLASSES, labels[i + b], NUM_CLASSES * sizeof(double), H2D, stream);
             }
             forward_cuda(net, d_input, d_output, d_hidden, stream);
+            backward_cuda(net, d_input, d_hidden, d_output, d_label, stream);
             cudaStreamSynchronize(stream);
         }
         printf("Epoch %d - Time: %.3fs (incomplete training)\n", epoch + 1, (double)(clock() - epoch_start)/CLOCKS_PER_SEC);
