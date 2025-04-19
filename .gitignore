@@ -1,0 +1,6 @@
+*.exe
+*.out
+.vscode
+*.cpp
+open
+/data
