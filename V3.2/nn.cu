@@ -11,7 +11,7 @@
 #define LEARNING_RATE 0.01
 #define EPOCHS 3
 #define BATCH_SIZE 1
-#define NUM_CLASSES 10  // Digits 0-9
+
 
 #define H2D cudaMemcpyHostToDevice
 #define D2H cudaMemcpyDeviceToHost
