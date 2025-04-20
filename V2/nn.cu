@@ -132,7 +132,6 @@ __global__ void compute_hidden_layer(NeuralNetwork* net, const double* input, do
     }
 }
 
-// Softmax kernel
 __global__ void compute_output_layer(NeuralNetwork* net, const double* hidden, double* output) {
     int i = threadIdx.x;
     if (i < OUTPUT_SIZE) {
@@ -144,7 +143,6 @@ __global__ void compute_output_layer(NeuralNetwork* net, const double* hidden, d
     }
 }
 
-// Normalization kernel for softmax
 __global__ void normalize_softmax(double* output) {
     double sum = 0.0;
     for (int i = 0; i < OUTPUT_SIZE; i++) {
@@ -156,7 +154,6 @@ __global__ void normalize_softmax(double* output) {
 }
 
 
-// Kernel 1: d_output = output - target
 __global__ void compute_d_output(const double* output, const double* target, double* d_output) {
     int i = threadIdx.x;
     if (i < OUTPUT_SIZE) {
@@ -164,7 +161,6 @@ __global__ void compute_d_output(const double* output, const double* target, dou
     }
 }
 
-// Kernel 2: d_hidden = (W2^T * d_output) * ReLU'(hidden)
 __global__ void compute_d_hidden(NeuralNetwork* net, const double* d_output, const double* hidden, double* d_hidden) {
     int i = threadIdx.x;
     if (i < HIDDEN_SIZE) {
@@ -176,7 +172,6 @@ __global__ void compute_d_hidden(NeuralNetwork* net, const double* d_output, con
     }
 }
 
-// Kernel 3: update W2 and b2
 __global__ void update_output_weights(NeuralNetwork* net, const double* d_output, const double* hidden) {
     int i = blockIdx.x; // OUTPUT neuron index
     int j = threadIdx.x; // HIDDEN neuron index
@@ -191,7 +186,6 @@ __global__ void update_output_weights(NeuralNetwork* net, const double* d_output
     }
 }
 
-// Kernel 4: update W1 and b1
 __global__ void update_hidden_weights(NeuralNetwork* net, const double* d_hidden, const double* input) {
     int i = blockIdx.x; // HIDDEN neuron index
     int j = threadIdx.x; // INPUT neuron index
@@ -232,9 +226,8 @@ void backward_cuda(NeuralNetwork* net, double* input, double* hidden, double* ou
     cudaFree(d_hidden_grad);
 }
 
-// Train network
 void train(NeuralNetwork* net, double** images, double** labels, int numImages) {
-    clock_t total_start = clock();
+    // clock_t total_start = clock();
     double* hidden = (double*)malloc(sizeof(double) * HIDDEN_SIZE);
     double* output = (double*)malloc(sizeof(double) * OUTPUT_SIZE);
     double* d_hidden, *d_output, *d_input, *d_label;
@@ -271,12 +264,11 @@ void train(NeuralNetwork* net, double** images, double** labels, int numImages) 
         printf("Epoch %d - Loss: %.4f - Train Accuracy: %.2f%% - Time: %.3fs\n",
                epoch + 1, loss / numImages, (correct / (double)numImages) * 100, get_time(epoch_start));
     }
-    printf("Total training time: %.3fs\n", get_time(total_start));
+    // printf("Total training time: %.3fs\n", get_time(total_start));
 }
 
-// Evaluate accuracy on test data
 void evaluate(NeuralNetwork* net, double** images, double** labels, int numImages) {
-    clock_t total_start = clock();
+    // clock_t total_start = clock();
     int correct = 0;
     double* hidden = (double*)malloc(sizeof(double) * HIDDEN_SIZE);
     double* output = (double*)malloc(sizeof(double) * OUTPUT_SIZE);
@@ -300,11 +292,11 @@ void evaluate(NeuralNetwork* net, double** images, double** labels, int numImage
         if (pred == actual) correct++;
     }
     printf("Test Accuracy: %.2f%%\n", (correct / (double)numImages) * 100);
-    printf("Total Evaluation time: %.3fs\n", get_time(total_start));
+    // printf("Total Evaluation time: %.3fs\n", get_time(total_start));
 
 }
 
-// Read MNIST dataset
+
 double** loadMNISTImages(const char* filename, int numImages) {
     FILE* file = fopen(filename, "rb");
     if (!file) {
@@ -330,7 +322,6 @@ double** loadMNISTImages(const char* filename, int numImages) {
     fclose(file);
     return images;
 }
-
 
 double** loadMNISTLabels(const char* filename, int numLabels) {
     FILE* file = fopen(filename, "rb");
@@ -358,14 +349,21 @@ double** loadMNISTLabels(const char* filename, int numLabels) {
 }
 
 
-// Free network memory
-// void freeNetwork(NeuralNetwork* net) {
-//     freeMatrix(net->W1, HIDDEN_SIZE);
-//     freeMatrix(net->W2, OUTPUT_SIZE);
-//     free(net->b1);
-//     free(net->b2);
-//     free(net);
-// }
+void freeNetwork(NeuralNetworkCPU* net) {
+    freeMatrix(net->W1, HIDDEN_SIZE);
+    freeMatrix(net->W2, OUTPUT_SIZE);
+    free(net->b1);
+    free(net->b2);
+    free(net);
+}
+
+void freeNetwork(NeuralNetwork* net) {
+    cudaFree(net->W1);
+    cudaFree(net->W2);
+    cudaFree(net->b1);
+    cudaFree(net->b2);
+    cudaFree(net);
+}
 
 
 NeuralNetworkCPU* createNetworkCPU();
@@ -383,18 +381,54 @@ int main() {
     double** test_images = loadMNISTImages("../data/t10k-images.idx3-ubyte", 10000);
     double** test_labels = loadMNISTLabels("../data/t10k-labels.idx1-ubyte", 10000);
 
+    // Timing for GPU training
+    printf("\nStarting GPU training...\n");
+    clock_t total_gpu_train = clock();
     NeuralNetwork* net = createNetwork();
     train(net, train_images, train_labels, 60000);
+    double gpu_train_time = get_time(total_gpu_train);
+    printf("\nGPU Training time: %.3fs\n", gpu_train_time);
+
+    // Timing for GPU evaluation
+    clock_t total_gpu_eval = clock();
     evaluate(net, test_images, test_labels, 10000);
+    double gpu_eval_time = get_time(total_gpu_eval);
+    printf("GPU Evaluation time: %.3fs\n", gpu_eval_time);
+
+    // Overall GPU time (Training + Evaluation)
+    double gpu_total_time = gpu_train_time + gpu_eval_time;
+    printf("\nTotal GPU time (Training + Evaluation): %.3fs\n\n", gpu_total_time);
 
 
+    // Timing for CPU training
+    printf("\nStarting CPU training...\n");
+    clock_t total_cpu_train = clock();
     NeuralNetworkCPU* netCPU = createNetworkCPU();
     trainCPU(netCPU, train_images, train_labels, 60000);
+    double cpu_train_time = get_time(total_cpu_train);
+    printf("\nCPU Training time: %.3fs\n", cpu_train_time);
+
+    // Timing for CPU evaluation
+    clock_t total_cpu_eval = clock();
     evaluateCPU(netCPU, test_images, test_labels, 10000);
+    double cpu_eval_time = get_time(total_cpu_eval);
+    printf("CPU Evaluation time: %.3fs\n", cpu_eval_time);
+
+    // Overall CPU time (Training + Evaluation)
+    double cpu_total_time = cpu_train_time + cpu_eval_time;
+    printf("\nTotal CPU time (Training + Evaluation): %.3fs\n\n", cpu_total_time);
+
+    // Speedup Calculations
+    double train_speedup = cpu_train_time / gpu_train_time;
+    double eval_speedup = cpu_eval_time / gpu_eval_time;
+    double total_speedup = cpu_total_time / gpu_total_time;
+
+    printf("Speedup (Training): %.3f\n", train_speedup);
+    printf("Speedup (Evaluation): %.3f\n", eval_speedup);
+    printf("Overall Speedup (CPU / GPU): %.3f\n\n", total_speedup);
 
 
-
-    // freeNetwork(net);
+    freeNetwork(netCPU);
     return 0;
 }
 
@@ -469,7 +503,7 @@ void backward(NeuralNetworkCPU* net, double* input, double* hidden, double* outp
 
 // Train network
 void trainCPU(NeuralNetworkCPU* net, double** images, double** labels, int numImages) {
-    clock_t total_start = clock();
+    // clock_t total_start = clock();
     for (int epoch = 0; epoch < EPOCHS; epoch++) {
         clock_t epoch_start = clock();
         double loss = 0.0;
@@ -493,11 +527,11 @@ void trainCPU(NeuralNetworkCPU* net, double** images, double** labels, int numIm
         printf("Epoch %d - Loss: %.4f - Train Accuracy: %.2f%% - Time: %.3fs\n",
                epoch + 1, loss / numImages, (correct / (double)numImages) * 100, get_time(epoch_start));
     }
-    printf("Total training time: %.3fs\n", get_time(total_start));
+    // printf("Total training time: %.3fs\n", get_time(total_start));
 }
 
 void evaluateCPU(NeuralNetworkCPU* net, double** images, double** labels, int numImages) {
-    clock_t total_start = clock();
+    // clock_t total_start = clock();
     int correct = 0;
     for (int i = 0; i < numImages; i++) {
         double hidden[HIDDEN_SIZE], output[OUTPUT_SIZE];
@@ -510,6 +544,6 @@ void evaluateCPU(NeuralNetworkCPU* net, double** images, double** labels, int nu
         if (pred == actual) correct++;
     }
     printf("Test Accuracy: %.2f%%\n", (correct / (double)numImages) * 100);
-    printf("Total Evaluation time: %.3fs\n", get_time(total_start));
+    // printf("Total Evaluation time: %.3fs\n", get_time(total_start));
 
 }
