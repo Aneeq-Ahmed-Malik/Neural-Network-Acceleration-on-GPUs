@@ -1,2 +1,0 @@
-1 sec total (3 epochs) gain by hiding next memcpy in prev backward ~ diff of 4 sec in traiing time
-0.5-0.7 sec total (3 epochs) gain by using shared memory
