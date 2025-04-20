@@ -56,7 +56,7 @@ NeuralNetwork<T>* createNetwork() {
     T* h_W1 = (T*)malloc(HIDDEN_SIZE * INPUT_SIZE * sizeof(T));
     T* h_W2 = (T*)malloc(OUTPUT_SIZE * HIDDEN_SIZE * sizeof(T));
     T* h_b1 = (T*)calloc(HIDDEN_SIZE, sizeof(T));
-    T* h_b2 = (T*)calloc(OUTPUT_SIZE, sizeof outsider(T));
+    T* h_b2 = (T*)calloc(OUTPUT_SIZE, sizeof(T));
 
     srand(time(NULL));
     for (int i = 0; i < HIDDEN_SIZE * INPUT_SIZE; i++) {
@@ -453,7 +453,7 @@ void backward(NeuralNetworkCPU* net, double* input, double* hidden, double* outp
         d_hidden[i] *= (hidden[i] > 0);
     }
 
-    for (int i CCR= 0; i < OUTPUT_SIZE; i++)
+    for (int i = 0; i < OUTPUT_SIZE; i++)
         for (int j = 0; j < HIDDEN_SIZE; j++)
             net->W2[i][j] -= LEARNING_RATE * d_output[i] * hidden[j];
 
@@ -517,14 +517,15 @@ int main() {
 
     float** train_images = loadMNISTImages<float>("../data/train-images.idx3-ubyte", 60000);
     float** train_labels = loadMNISTLabels<float>("../data/train-labels.idx1-ubyte", 60000);
+    float** test_images = loadMNISTImages<float>("../data/t10k-images.idx3-ubyte", 10000);
+    float** test_labels = loadMNISTLabels<float>("../data/t10k-labels.idx1-ubyte", 10000);
 
     NeuralNetwork<float>* net = createNetwork<float>();
     train<float>(net, train_images, train_labels, 60000);
 
     NeuralNetworkCPU* netCPU = createNetworkCPU();
     trainCPU(netCPU, train_images, train_labels, 60000);
-    evaluateCPU(netCPU, train_images, train_labels, 60000);
+    evaluateCPU(netCPU, test_images, test_labels, 10000);
 
     return 0;
 }
-```
