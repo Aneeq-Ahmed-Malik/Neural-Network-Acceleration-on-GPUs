@@ -178,7 +178,6 @@ __global__ void normalize_softmax(double* output) {
 }
 
 
-
 // Kernel 1: d_output = output - target
 __global__ void compute_d_output(const double* output, const double* target, double* d_output) {
     int i = threadIdx.x;
@@ -275,7 +274,7 @@ void train(NeuralNetwork* net, double** images, double** labels, int numImages) 
     double *pinned_output;
     cudaHostAlloc(&pinned_output, OUTPUT_SIZE * sizeof(double), cudaHostAllocDefault);
 
-    clock_t total_start = clock();
+    // clock_t total_start = clock();
     double *loss;
     cudaMallocManaged((void**)&loss, sizeof(double));
     // SPECIAL CASE: First forward pass (stream 0)
@@ -335,12 +334,13 @@ void train(NeuralNetwork* net, double** images, double** labels, int numImages) 
     cudaFree(d_input);
     cudaFree(d_label);
 
-    printf("Total training time: %.3fs\n", (double)(clock() - total_start)/CLOCKS_PER_SEC);
+    // printf("Total training time: %.3fs\n", (double)(clock() - total_start)/CLOCKS_PER_SEC);
 }
 
-/*
+
+
 void evaluate(NeuralNetwork* net, double** images, double** labels, int numImages) {
-    clock_t total_start = clock();
+    // clock_t total_start = clock();
     int correct = 0;
     double* hidden = (double*)malloc(sizeof(double) * HIDDEN_SIZE);
     double* output = (double*)malloc(sizeof(double) * OUTPUT_SIZE);
@@ -353,7 +353,7 @@ void evaluate(NeuralNetwork* net, double** images, double** labels, int numImage
     for (int i = 0; i < numImages; i++) {
 
         cudaMemcpy(d_input, images[i], sizeof(double) * INPUT_SIZE, H2D);
-        forward_cuda(net, d_input, d_output, d_hidden);
+        forward_cuda(net, d_input, d_output, d_hidden, 0);
         cudaMemcpy(output, d_output, sizeof(double) * OUTPUT_SIZE, D2H);
 
         int pred = 0, actual = 0;
@@ -364,10 +364,10 @@ void evaluate(NeuralNetwork* net, double** images, double** labels, int numImage
         if (pred == actual) correct++;
     }
     printf("Test Accuracy: %.2f%%\n", (correct / (double)numImages) * 100);
-    printf("Total Evaluation time: %.3fs\n", get_time(total_start));
+    // printf("Total Evaluation time: %.3fs\n", get_time(total_start));
 
 }
-*/
+
 
 // Read MNIST dataset
 double** loadMNISTImages(const char* filename, int numImages) {
@@ -423,6 +423,23 @@ double** loadMNISTLabels(const char* filename, int numLabels) {
 }
 
 
+void freeNetwork(NeuralNetworkCPU* net) {
+    freeMatrix(net->W1, HIDDEN_SIZE);
+    freeMatrix(net->W2, OUTPUT_SIZE);
+    free(net->b1);
+    free(net->b2);
+    free(net);
+}
+
+void freeNetwork(NeuralNetwork* net) {
+    cudaFree(net->W1);
+    cudaFree(net->W2);
+    cudaFree(net->b1);
+    cudaFree(net->b2);
+    cudaFree(net);
+}
+
+
 
 NeuralNetworkCPU* createNetworkCPU();
 void forward(NeuralNetworkCPU* net, double* input, double* hidden, double* output);
@@ -439,18 +456,57 @@ int main() {
     double** test_images = loadMNISTImages("../data/t10k-images.idx3-ubyte", 10000);
     double** test_labels = loadMNISTLabels("../data/t10k-labels.idx1-ubyte", 10000);
 
-
-    // NeuralNetworkCPU* netCPU = createNetworkCPU();
-    // trainCPU(netCPU, train_images, train_labels, 60000);
-    // evaluateCPU(netCPU, test_images, test_labels, 10000);
-
+    // Timing for GPU training
+    printf("\nStarting GPU training...\n");
+    clock_t total_gpu_train = clock();
     NeuralNetwork* net = createNetwork();
     train(net, train_images, train_labels, 60000);
-    // evaluate(net, test_images, test_labels, 10000);
+    double gpu_train_time = get_time(total_gpu_train);
+    printf("\nGPU Training time: %.3fs\n", gpu_train_time);
+
+    // Timing for GPU evaluation
+    clock_t total_gpu_eval = clock();
+    evaluate(net, test_images, test_labels, 10000);
+    double gpu_eval_time = get_time(total_gpu_eval);
+    printf("GPU Evaluation time: %.3fs\n", gpu_eval_time);
+
+    // Overall GPU time (Training + Evaluation)
+    double gpu_total_time = gpu_train_time + gpu_eval_time;
+    printf("\nTotal GPU time (Training + Evaluation): %.3fs\n\n", gpu_total_time);
+
+
+    // Timing for CPU training
+    printf("\nStarting CPU training...\n");
+    clock_t total_cpu_train = clock();
+    NeuralNetworkCPU* netCPU = createNetworkCPU();
+    trainCPU(netCPU, train_images, train_labels, 60000);
+    double cpu_train_time = get_time(total_cpu_train);
+    printf("\nCPU Training time: %.3fs\n", cpu_train_time);
+
+    // Timing for CPU evaluation
+    clock_t total_cpu_eval = clock();
+    evaluateCPU(netCPU, test_images, test_labels, 10000);
+    double cpu_eval_time = get_time(total_cpu_eval);
+    printf("CPU Evaluation time: %.3fs\n", cpu_eval_time);
+
+    // Overall CPU time (Training + Evaluation)
+    double cpu_total_time = cpu_train_time + cpu_eval_time;
+    printf("\nTotal CPU time (Training + Evaluation): %.3fs\n\n", cpu_total_time);
+
+    // Speedup Calculations
+    double train_speedup = cpu_train_time / gpu_train_time;
+    double eval_speedup = cpu_eval_time / gpu_eval_time;
+    double total_speedup = cpu_total_time / gpu_total_time;
+
+    printf("Speedup (Training): %.3f\n", train_speedup);
+    printf("Speedup (Evaluation): %.3f\n", eval_speedup);
+    printf("Overall Speedup (CPU / GPU): %.3f\n\n", total_speedup);
+
+
+    freeNetwork(netCPU);
 
 
 
-    // freeNetwork(net);
     return 0;
 }
 
@@ -525,7 +581,7 @@ void backward(NeuralNetworkCPU* net, double* input, double* hidden, double* outp
 
 // Train network
 void trainCPU(NeuralNetworkCPU* net, double** images, double** labels, int numImages) {
-    clock_t total_start = clock();
+    // clock_t total_start = clock();
     for (int epoch = 0; epoch < EPOCHS; epoch++) {
         clock_t epoch_start = clock();
         double loss = 0.0;
@@ -549,11 +605,11 @@ void trainCPU(NeuralNetworkCPU* net, double** images, double** labels, int numIm
         printf("Epoch %d - Loss: %.4f - Train Accuracy: %.2f%% - Time: %.3fs\n",
                epoch + 1, loss / numImages, (correct / (double)numImages) * 100, get_time(epoch_start));
     }
-    printf("Total training time: %.3fs\n", get_time(total_start));
+    // printf("Total training time: %.3fs\n", get_time(total_start));
 }
 
 void evaluateCPU(NeuralNetworkCPU* net, double** images, double** labels, int numImages) {
-    clock_t total_start = clock();
+    // clock_t total_start = clock();
     int correct = 0;
     for (int i = 0; i < numImages; i++) {
         double hidden[HIDDEN_SIZE], output[OUTPUT_SIZE];
@@ -566,6 +622,6 @@ void evaluateCPU(NeuralNetworkCPU* net, double** images, double** labels, int nu
         if (pred == actual) correct++;
     }
     printf("Test Accuracy: %.2f%%\n", (correct / (double)numImages) * 100);
-    printf("Total Evaluation time: %.3fs\n", get_time(total_start));
+    // printf("Total Evaluation time: %.3fs\n", get_time(total_start));
 
 }
